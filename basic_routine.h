@@ -1,21 +1,38 @@
-#ifndef basic_routine
-#define basic_routine
+#ifndef BASIC_ROUTINE_H
+#define BASIC_ROUTINE_H
 #include "const.h"
 #include <avr/wdt.h>
 #include <INA226_WE.h>
+#include <SoftI2CMaster.h>   // FIX (was missing): MLX90614 on A1/A2, pins defined in const.h
 
-INA226_WE ina226 = INA226_WE(I2C_ADDRESS);
+INA226_WE ina226 = INA226_WE(I2C_ADDRESS);   // hardware I2C (Wire) on A4/A5
 
-//MAX6675 thermocouple(THERMOCS, THERMOD , THERMOCLK);
-//#include <MovingAverage.h>  // see https://github.com/careyi3/MovingAverage
-//MovingAverage filter(MOVING_AVG_LENGTH);  // define/use the movinge average object
+// Put every output in a safe LOW state BEFORE switching it to OUTPUT
+void init_pins(){
+  const uint8_t outs[] = {SPARK_IO, CHARGE_IO, TURN_ON_OFF_CURRENT_IO, FAN_IO, VALVE_HYDRO_IO, VALVE_WATER_IO};
+  for (uint8_t i = 0; i < sizeof(outs); i++){
+    digitalWrite(outs[i], LOW);
+    pinMode(outs[i], OUTPUT);
+  }
+  pinMode(IGNITION_BUTTON_IO, INPUT_PULLUP);   // button to GND (pressed = LOW)
+}
+
+// Non-blocking-ish wait that keeps the watchdog fed
+void wait_ms(uint32_t ms){
+  uint32_t t0 = millis();
+  while (millis() - t0 < ms){
+    wdt_reset();
+    delay(10);
+  }
+}
+
 bool init_current_sensor(){
   Wire.begin();
   if(!ina226.init()){
      Serial.println("No communication with the current sensor");
      return false;
   }
-  ina226.setResistorRange(R_SHUNT_OHMS,I_RANGE_A); // choose resistor 5 mOhm and gain range up to 10 A
+  ina226.setResistorRange(R_SHUNT_OHMS,I_RANGE_A);
   return true;
 }
 
@@ -29,102 +46,103 @@ void TURN_ON_CURRENT(){
    Serial.println("current is on");
 }
 
-
+// 0 = I2C error, 1 = current OK (below limit), 2 = current too high
+// NOTE: call init_current_sensor() in setup() before using this
 int current_valid(){
   ina226.readAndClearFlags();
   float current = ina226.getCurrent_A();
 
   if (ina226.getI2cErrorCode() != 0) {
+      delay(200);          // FIX: this delay was after the return (never executed)
       return 0;
-      delay(200);
-    }
+  }
   read++;
-  //Serial.println("read : " + String(read));
-  //Serial.println("first_time_current : " + String(first_time_current));
-  //average_current += current;
-  //Serial.println("current : " + String(current));
-  
+
   if(first_time_current && read == NUM_OF_READ){
-    //average_current = average_current/NUM_OF_READ;
     first_time_current = false;
     Serial.println("\nCurrent : " + String(current) + "A");
     Serial.println("Voltage : " + String(ina226.getBusVoltage_V()) + "V\n");
   }
   
   if (current < CURRENT_SYSTEM){
-    //Serial.println("enter");
     return 1;
   }
   return 2;
 }
 
-
 bool check_water_level(){
-  //Serial.println(analogRead(SENSOR_WATER_IO));
   if (analogRead(SENSOR_WATER_IO) >= NO_DETECTION){
     return false;
   }
   return true;
 }
 
-bool high_pressure_hydro(){
-  //Serial.println(analogRead(SENSOR_WATER_IO));
-  if (analogRead(SENSOR_PRESSURE_HYDRO_IO) >= HIGH_PRESSURE){
-    return true;
+bool init_temp_sensor() {
+  if (!i2c_init()) {
+    Serial.println("Soft I2C init failed (check pull-ups on A1/A2)");
+    return false;
   }
-  return false;
+  return true;
 }
 
+// Reads one 16-bit register of the MLX90614 -> degrees C, or NAN on error
+float mlx_read_temp_c(uint8_t reg) {
+  if (!i2c_start(MLX_ADDR | I2C_WRITE)) {
+    i2c_stop();
+    return NAN;
+  }
+  i2c_write(reg);
+  i2c_rep_start(MLX_ADDR | I2C_READ);
+  uint8_t lo = i2c_read(false);
+  uint8_t hi = i2c_read(false);
+  i2c_read(true);                 // PEC byte, ignored
+  i2c_stop();
 
+  if (hi & 0x80) return NAN;      // MSB set = error flag from the sensor
+  uint16_t raw = ((uint16_t)hi << 8) | lo;
+  return raw * 0.02 - 273.15;
+}
 
-// --- Fonction pour lire la température depuis un NTC ---
 float readTemperature() {
-  int analogValue = analogRead(NTC_PIN);
-  
-  // Conversion analogique -> résistance
-  float resistance = R_SERIE / ((1023.0 / analogValue) - 1.0);
-  
-  // Formule Beta pour obtenir la température en Kelvin
-  float temperatureK = 1.0 / ( (1.0 / T0) + (1.0 / BETA) * log(resistance / R0) );
-  
-  // Conversion en Celsius
-  float temperatureC = temperatureK - 273.15;
-  if (first_time_temp){
+  float temperatureC = mlx_read_temp_c(MLX_REG_TOBJ1);
+  if (isnan(temperatureC)) {                 // one retry
+    delay(5);
+    temperatureC = mlx_read_temp_c(MLX_REG_TOBJ1);
+  }
+
+  if (first_time_temp && !isnan(temperatureC)) {
     first_time_temp = false;
-    Serial.print("First Température : ");
+    Serial.print("First Temperature : ");
     Serial.println(temperatureC);
   }
+
   return temperatureC;
 }
 
-// --- Fonction pour détecter baisse de température ---
-bool detect_drop_temp() {
+// Flame detection: compares the current temperature to the baseline taken before the spark.
+// Returns true if the temp rose by at least FLAME_DELTA_TEMP above baseTemp.
+// (renamed from detect_drop_temp - it checks for a RISE in temperature)
+bool detect_flame() {
   float tempNow = readTemperature();
-  // Première mesure : on l'accepte toujours comme "false"
-  if (lastTemp == FIRST_SESSION_TEMP || first_temp) {
-    lastTemp = tempNow;
-    first_temp = false;
+
+  // Sensor failure (or no baseline): treat as "no flame" so the session is shut down safely
+  if (isnan(tempNow) || isnan(baseTemp)) {
+    Serial.println("Error: no valid temperature reading");
     return false;
   }
-  if (first_time_delta){
-    first_time_delta = false;
-    Serial.print("Last Température : ");
-    Serial.println(tempNow);
-    Serial.print("\ndelta Température : ");
-    Serial.println(tempNow - lastTemp);
-  }
-  // Si la température baisse par rapport à la précédente -> true
-  if (tempNow <= lastTemp) {
-    lastTemp = tempNow;
-    return true;
-  }
-  
-  // Sinon (stable ou hausse) -> true
-  //lastTemp = tempNow;
-  return false;
+
+  float delta = tempNow - baseTemp;
+
+  Serial.print("Temp: ");
+  Serial.print(tempNow);
+  Serial.print(" C | Base: ");
+  Serial.print(baseTemp);
+  Serial.print(" C | Delta: ");
+  Serial.print(delta);
+  Serial.println(" C");
+
+  return delta >= FLAME_DELTA_TEMP;
 }
-
-
 
 void FILL_WATER(){
   digitalWrite(VALVE_WATER_IO, HIGH);
@@ -133,26 +151,21 @@ void FILL_WATER(){
   delay(DELAY_AFTER_FILL_WATER);
 }
 
-
-
 bool PRESS_BUTTON_IGNITION() {
-   wdt_reset();//reset the watchdog
-  // Check if the button is pressed
+  wdt_reset();
+  // Button pressed
   if (digitalRead(IGNITION_BUTTON_IO) == LOW && check_ignit == LOW) {
-     //Serial.println("press :");
-     check_ignit = HIGH;         // Mark that the button is being pressed
-    delay(BOUNCE_TIME); // Apply debounce delay
+    check_ignit = HIGH;
+    delay(BOUNCE_TIME);
   }
 
-  // Check if the button is released
+  // Button released -> one full press+release
   if (digitalRead(IGNITION_BUTTON_IO) == HIGH && check_ignit == HIGH) {
-    //Serial.println("unpress");
-    check_ignit = LOW;  // Reset the state for the next button press
-    return HIGH;  // Indicate that the button was successfully pressed and released
+    check_ignit = LOW;
+    return HIGH;
   }
-  return LOW; // Return false if the button is not in the desired state
+  return LOW;
 }
-
 
 void CLOSE_VALVE(){
   digitalWrite(VALVE_HYDRO_IO, LOW);
@@ -162,27 +175,26 @@ void CLOSE_VALVE(){
 void OPEN_VALVE(){
   digitalWrite(VALVE_HYDRO_IO, HIGH);
   Serial.println("valve is open ");
-
 }
 
 void SPARK_ON(){
-  for(int i = 0; i < NUM_OF_SPARK; i++){//ignite - turn on spark 3 times
+  for(int i = 0; i < NUM_OF_SPARK; i++){
     digitalWrite(CHARGE_IO,HIGH);
     Serial.println("charging started");
     delay(CHARGING_TIME);
     digitalWrite(CHARGE_IO,LOW);
     Serial.println("charging stopped");
 
-    digitalWrite(SPARK_IO, HIGH);  // ignite - turn on spark
+    digitalWrite(SPARK_IO, HIGH);
     Serial.println("spark high");
     delay(SPARK_TIME);
-    digitalWrite(SPARK_IO, LOW);  // turn off spark
+    digitalWrite(SPARK_IO, LOW);
     Serial.println("spark low");
     delay(SPARK_SPACE_TIME);
-    //wdt_reset();
+    wdt_reset();
   }
-  delay(DELAY_AFTER_SPARK);  // wait 
-  //wdt_reset();//reset the watchdog
+  delay(DELAY_AFTER_SPARK);
+  wdt_reset();
 }
 
 void ACTIVE_FAN() {
@@ -198,18 +210,17 @@ void ACTIVE_FAN() {
 void DEACTIVE_FAN() {
   digitalWrite(FAN_IO, LOW);
   delay(DELAY_FAN_OFF);
-
 }
 
-
 void reset_session() {
-  //Serial.println("reset_session function starting");
   digitalWrite(SPARK_IO, LOW);
+  digitalWrite(CHARGE_IO, LOW);
   CLOSE_VALVE();
-  delay(DELAY_BEFORE_VALVE_OFF);
+  //delay(DELAY_BEFORE_VALVE_OFF);
+  delay(1500);
   TURN_OFF_CURRENT();
-  
-  
+  Serial.println("current is off");
+
   read = 0;
   average_current = 0;
   first_time_current = true;
@@ -217,9 +228,8 @@ void reset_session() {
   flag_first_press = false;
   flag_new_session = true;
   flag_spark_ready = false;
+  baseTemp = NAN;
   time_start = millis();
 }
-
-
 
 #endif
