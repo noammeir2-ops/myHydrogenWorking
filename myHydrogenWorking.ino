@@ -20,7 +20,7 @@ void run_session() {
   Serial.println("start!");
 
   OPEN_VALVE();
-  delay(100);
+  delay(300);
   TURN_ON_CURRENT();
 
   Serial.println("waiting for hydrogen...");

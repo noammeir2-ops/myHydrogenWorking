@@ -44,8 +44,8 @@
 #define TURN_ON_OFF_CURRENT_IO   7  // transistor -> 220 V SSR -> 12V power supply
 #define CHARGE_IO                8  // the charge pin is connected to the capacitor
 #define FAN_IO                   9  // the FAN is switched by a transistor
-#define VALVE_HYDRO_IO           10 // the VALVE is switched by a transistor
-#define VALVE_WATER_IO           11 // the VALVE is switched by a transistor
+#define VALVE_HYDRO_IO           11 // the VALVE is switched by a transistor
+#define VALVE_WATER_IO           10 // the VALVE is switched by a transistor
 
 // Set to true to restart a session automatically in a loop, false = one session per button press
 const bool AUTO_START = true;
@@ -63,7 +63,7 @@ const uint32_t SESSION_TIME          = 60000; // time between spark and end of t
 
 //////SPARK //////
 const int16_t SPARK_SPACE_TIME = 1000;  // ms
-const int16_t CHARGING_TIME = 250;      // the time the capacitor is charging (ms)
+const int16_t CHARGING_TIME = 300;      // the time the capacitor is charging (ms)
 const int16_t SPARK_TIME = 20;          // ms - Spark time !!! keep as short as possible to avoid HV driver damage
 const int16_t NUM_OF_SPARK = 2;         // number of sparks
 const int16_t DELAY_AFTER_SPARK = 500;  // ms
