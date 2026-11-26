@@ -11,11 +11,11 @@
  *                       GND-|       |-+5V  
  *    IGNITION_BUTTON_IO  D2-|       |-A7  
  *              SPARK_IO  D3-|       |-A6  
- *                        D4-|       |-A5   SCL current sensor (INA226)
- *                        D5-|       |-A4   SDA current sensor (INA226)
+ *                        D4-|       |-A5   SCL shared I2C: INA226 (0x40) + MLX90614 (0x5A)
+ *                        D5-|       |-A4   SDA shared I2C: INA226 (0x40) + MLX90614 (0x5A)
  *                        D6-|       |-A3   SENSOR_WATER_IO
- *TURN_ON_OFF_CURRENT_IO  D7-|       |-A2   SCL soft I2C (MLX90614)
- *             CHARGE_IO  D8-|       |-A1   SDA soft I2C (MLX90614)
+ *TURN_ON_OFF_CURRENT_IO  D7-|       |-A2   
+ *             CHARGE_IO  D8-|       |-A1   
  *                FAN_IO  D9-|       |-A0   
  *        VALVE_HYDRO_IO D10-|       |-Ref
  *        VALVE_WATER_IO D11-|       |-3.3V   
@@ -25,17 +25,10 @@
 #define BAUDRATE (9600)
 ////////////  I/O   ////////////
 #define SENSOR_WATER_IO           A3
-//CURRENT_SENSOR                  A4,A5 for SCL SDA
-
-// Software I2C for the MLX90614 (SoftI2CMaster library) - must be defined BEFORE including SoftI2CMaster.h
-#define SDA_PORT PORTC
-#define SDA_PIN  1          // A1 = PC1
-#define SCL_PORT PORTC
-#define SCL_PIN  2          // A2 = PC2
-#define I2C_FASTMODE 0      // MLX90614 works up to 100 kHz
+//I2C (hardware Wire): A4 = SDA, A5 = SCL - shared by INA226 and MLX90614
 
 // MLX90614
-#define MLX_ADDR   (0x5A << 1)
+#define MLX_ADDR   0x5A   // 7-bit address (Wire library)
 #define MLX_REG_TAMB   0x06
 #define MLX_REG_TOBJ1  0x07
 
