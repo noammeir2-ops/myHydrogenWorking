@@ -3,9 +3,9 @@
 #include "const.h"
 #include <avr/wdt.h>
 #include <INA226_WE.h>
-#include <SoftI2CMaster.h>   // FIX (was missing): MLX90614 on A1/A2, pins defined in const.h
+#include <Wire.h>
 
-INA226_WE ina226 = INA226_WE(I2C_ADDRESS);   // hardware I2C (Wire) on A4/A5
+INA226_WE ina226 = INA226_WE(I2C_ADDRESS);   // hardware I2C (Wire) on A4/A5, shared with the MLX90614
 
 // Put every output in a safe LOW state BEFORE switching it to OUTPUT
 void init_pins(){
@@ -78,8 +78,14 @@ bool check_water_level(){
 }
 
 bool init_temp_sensor() {
-  if (!i2c_init()) {
-    Serial.println("Soft I2C init failed (check pull-ups on A1/A2)");
+  Wire.begin();                  // safe to call more than once (also called in init_current_sensor)
+  Wire.setClock(100000);         // 100 kHz - fine for both INA226 and MLX90614
+#if defined(WIRE_HAS_TIMEOUT)
+  Wire.setWireTimeout(3000, true);   // don't hang forever if the bus gets stuck
+#endif
+  Wire.beginTransmission(MLX_ADDR);
+  if (Wire.endTransmission() != 0) {
+    Serial.println("No communication with the MLX90614 (check A4/A5 wiring, address 0x5A)");
     return false;
   }
   return true;
@@ -87,16 +93,17 @@ bool init_temp_sensor() {
 
 // Reads one 16-bit register of the MLX90614 -> degrees C, or NAN on error
 float mlx_read_temp_c(uint8_t reg) {
-  if (!i2c_start(MLX_ADDR | I2C_WRITE)) {
-    i2c_stop();
+  Wire.beginTransmission(MLX_ADDR);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) {     // repeated start
     return NAN;
   }
-  i2c_write(reg);
-  i2c_rep_start(MLX_ADDR | I2C_READ);
-  uint8_t lo = i2c_read(false);
-  uint8_t hi = i2c_read(false);
-  i2c_read(true);                 // PEC byte, ignored
-  i2c_stop();
+  if (Wire.requestFrom((uint8_t)MLX_ADDR, (uint8_t)3) != 3) {
+    return NAN;
+  }
+  uint8_t lo = Wire.read();
+  uint8_t hi = Wire.read();
+  Wire.read();                    // PEC byte, ignored
 
   if (hi & 0x80) return NAN;      // MSB set = error flag from the sensor
   uint16_t raw = ((uint16_t)hi << 8) | lo;
